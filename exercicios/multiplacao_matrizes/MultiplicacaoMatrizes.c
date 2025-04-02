@@ -6,8 +6,8 @@ int **allocate_matrix(int rows, int cols);
 void fill_matrix_random(int **matrix, int rows, int cols);
 void print_matrix(int **matrix, int rows, int cols);
 void free_matrix(int **matrix, int rows);
-void multiplicar_com_acesso_coluna(int **A, int **B, int **C, int rowsA, int colsA, int colsB);
-void multiplicar_com_acesso_linha(int **A, int **B, int **C, int rowsA, int colsA, int colsB);
+void multiply_with_column_access(int **A, int **B, int **C, int rowsA, int colsA, int colsB);
+void multiply_with_row_access(int **A, int **B, int **C, int rowsA, int colsA, int colsB);
 
 int main()
 {
@@ -34,9 +34,9 @@ int main()
     // printf("Matriz B:\n");
     // print_matrix(B, rowsB, colsB);
 
-    multiplicar_com_acesso_linha(A, B, C_linha, rowsA, colsA, colsB);
+    multiply_with_row_access(A, B, C_linha, rowsA, colsA, colsB);
 
-    multiplicar_com_acesso_coluna(A, B, C_coluna, rowsA, colsA, colsB);
+    multiply_with_column_access(A, B, C_coluna, rowsA, colsA, colsB);
 
     // printf("Matriz C:\n");
     // print_matrix(C, rowsA, colsB);
@@ -119,7 +119,7 @@ void free_matrix(int **matrix, int rows)
     free(matrix);
 }
 
-void multiplicar_com_acesso_linha(int **A, int **B, int **C, int rowsA, int colsA, int colsB)
+void multiply_with_row_access(int **A, int **B, int **C, int rowsA, int colsA, int colsB)
 {
     clock_t start = clock();
     for (int i = 0; i < rowsA; i++)
@@ -138,7 +138,7 @@ void multiplicar_com_acesso_linha(int **A, int **B, int **C, int rowsA, int cols
     printf("Tempo método linha: %.6f segundos\n", tempo_linha);
 }
 
-void multiplicar_com_acesso_coluna(int **A, int **B, int **C, int rowsA, int colsA, int colsB)
+void multiply_with_column_access(int **A, int **B, int **C, int rowsA, int colsA, int colsB)
 {
     clock_t start = clock();
     for (int j = 0; j < colsB; j++)
