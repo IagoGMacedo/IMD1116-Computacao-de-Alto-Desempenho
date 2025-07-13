@@ -4,13 +4,13 @@
 
 int main()
 {
-    int N = 100000000;
+    int N = 10000000;
 
     float a[N], b[N], c[N], res[N];
     int err = 0;
     struct timeval start, end;
     double elapsed;
-
+// fill the arrays
 #pragma omp parallel for
     for (int i = 0; i < N; i++)
     {
@@ -21,8 +21,8 @@ int main()
     }
 
     gettimeofday(&start, NULL);
-
-#pragma omp target map(to : a[0 : N], b[0 : N]) map(from : c[0 : N])
+// add two vectors
+#pragma omp target 
 #pragma omp loop
     for (int i = 0; i < N; i++)
     {
@@ -35,6 +35,7 @@ int main()
 
     printf("Tempo para soma (versão com gpu): %f segundos\n", elapsed);
 
+// test results
 #pragma omp parallel for reduction(+ : err)
     for (int i = 0; i < N; i++)
     {
