@@ -5,7 +5,7 @@
 
 int main()
 {
-    int N = 100000000;
+    int N = 10000000;
 
     float a[N], b[N], c[N], res[N];
     int err = 0;
