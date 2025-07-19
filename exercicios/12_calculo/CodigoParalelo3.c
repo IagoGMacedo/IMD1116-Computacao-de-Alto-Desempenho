@@ -41,7 +41,7 @@ int main() {
             for (k = 0; k < Nz; k++)
                 u[i*Ny*Nz + j*Nz + k] = 0.0;
 
-    FILE *fp = fopen("evolucao3d.csv", "w");
+    FILE *fp = fopen("evolucao3d_cpu.csv", "w");
     if (!fp) {
         printf("Erro ao abrir arquivo!\n");
         return 1;
@@ -119,7 +119,7 @@ int main() {
     free(y);
     free(z);
 
-    printf("Simulação 3D concluída (codigoParalelo 3). Resultados salvos em evolucao3d.csv\n");
+    printf("Simulação 3D concluída (codigoParalelo 3). Resultados salvos em evolucao3d_cpu.csv\n");
     printf("Tempo de execução: %.6lf segundos\n", elapsed(t0, t1));
     printf("Nx = %d, Ny = %d, Nz = %d\n", Nx, Ny, Nz);
     printf("Número máximo de threads configuradas: %d\n", omp_get_max_threads());
