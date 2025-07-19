@@ -7,14 +7,15 @@
 #define Lx 1.0
 #define Ly 1.0
 #define Lz 1.0
-#define Nx 301
-#define Ny 301
-#define Nz 301
+#define Nx 121  // Igual em ambos!
+#define Ny 121  // Igual em ambos!
+#define Nz 121  // Igual em ambos!
 #define NU 0.1
 #define DT 0.00002
 #define T 0.01
 #define SIGMA 0.1
 
+// Macro para verificação de erros CUDA
 #define CHECK(call) { \
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
@@ -27,26 +28,31 @@ double elapsed(struct timeval t0, struct timeval t1) {
     return (t1.tv_sec - t0.tv_sec) + (t1.tv_usec - t0.tv_usec) / 1e6;
 }
 
+// Kernel para zerar as bordas
 __global__ void set_borders_zero(double* u_new, int nx, int ny, int nz) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
 
+    // Face X = 0 e X = nx-1
     if (i < ny && j < nz) {
         u_new[0 * ny * nz + i * nz + j] = 0.0;
         u_new[(nx-1) * ny * nz + i * nz + j] = 0.0;
     }
 
+    // Face Y = 0 e Y = ny-1
     if (i < nx && j < nz) {
         u_new[i * ny * nz + 0 * nz + j] = 0.0;
         u_new[i * ny * nz + (ny-1) * nz + j] = 0.0;
     }
 
+    // Face Z = 0 e Z = nz-1
     if (i < nx && j < ny) {
         u_new[i * ny * nz + j * nz + 0] = 0.0;
         u_new[i * ny * nz + j * nz + (nz-1)] = 0.0;
     }
 }
 
+// Kernel principal de evolução
 __global__ void evolve_kernel(double* u, double* u_new, 
                              double nu_dt, double dx2, double dy2, double dz2,
                              int nx, int ny, int nz) {
@@ -66,87 +72,116 @@ __global__ void evolve_kernel(double* u, double* u_new,
     }
 }
 
-// Kernel com redução simplificada (sem shared memory)
-__global__ void partial_stats_kernel(double* u, double* partial_sums, double* partial_maxs, 
-                                    double* partial_mins, double* partial_sum_sqs, int size, int partial_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = gridDim.x * blockDim.x;
-
-    double local_sum = 0.0;
-    double local_max = -DBL_MAX;
-    double local_min = DBL_MAX;
-    double local_sum_sq = 0.0;
-
-    for (int i = idx; i < size; i += stride) {
-        double val = u[i];
-        local_sum += val;
-        local_max = fmax(local_max, val);
-        local_min = fmin(local_min, val);
-        local_sum_sq += val * val;
+// Kernel para redução de estatísticas usando memória compartilhada
+__global__ void reduce_stats_kernel(double* u, double* stats, int size) {
+    extern __shared__ double sdata[];
+    
+    int tid = threadIdx.x;
+    int i = blockIdx.x * blockDim.x * 4 + threadIdx.x;
+    
+    // Inicializa valores locais
+    double my_sum = 0.0;
+    double my_max = -DBL_MAX;
+    double my_min = DBL_MAX;
+    double my_sum_sq = 0.0;
+    
+    // Carrega até 4 elementos por thread
+    if (i < size) {
+        my_sum = u[i];
+        my_max = u[i];
+        my_min = u[i];
+        my_sum_sq = u[i] * u[i];
     }
-
-    // Apenas threads dentro do limite de partial_size escrevem
-    if (idx < partial_size) {
-        partial_sums[idx] = local_sum;
-        partial_maxs[idx] = local_max;
-        partial_mins[idx] = local_min;
-        partial_sum_sqs[idx] = local_sum_sq;
+    if (i + blockDim.x < size) {
+        double val = u[i + blockDim.x];
+        my_sum += val;
+        my_max = fmax(my_max, val);
+        my_min = fmin(my_min, val);
+        my_sum_sq += val * val;
+    }
+    if (i + 2*blockDim.x < size) {
+        double val = u[i + 2*blockDim.x];
+        my_sum += val;
+        my_max = fmax(my_max, val);
+        my_min = fmin(my_min, val);
+        my_sum_sq += val * val;
+    }
+    if (i + 3*blockDim.x < size) {
+        double val = u[i + 3*blockDim.x];
+        my_sum += val;
+        my_max = fmax(my_max, val);
+        my_min = fmin(my_min, val);
+        my_sum_sq += val * val;
+    }
+    
+    // Memória compartilhada para 4 valores por thread (soma, max, min, sum_sq)
+    int idx = tid * 4;
+    sdata[idx] = my_sum;
+    sdata[idx+1] = my_max;
+    sdata[idx+2] = my_min;
+    sdata[idx+3] = my_sum_sq;
+    __syncthreads();
+    
+    // Redução em árvore
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            int sidx = tid * 4;
+            int sidx2 = (tid + s) * 4;
+            
+            sdata[sidx] += sdata[sidx2];       // Soma
+            sdata[sidx+1] = fmax(sdata[sidx+1], sdata[sidx2+1]); // Máximo
+            sdata[sidx+2] = fmin(sdata[sidx+2], sdata[sidx2+2]); // Mínimo
+            sdata[sidx+3] += sdata[sidx2+3];   // Soma dos quadrados
+        }
+        __syncthreads();
+    }
+    
+    // Thread 0 escreve o resultado do bloco
+    if (tid == 0) {
+        int bidx = blockIdx.x * 4;
+        stats[bidx] = sdata[0];       // Soma
+        stats[bidx+1] = sdata[1];     // Máximo
+        stats[bidx+2] = sdata[2];     // Mínimo
+        stats[bidx+3] = sdata[3];     // Soma dos quadrados
     }
 }
 
+// Função wrapper para cálculo de estatísticas na GPU
 void compute_stats_gpu(double* d_u, double* h_stats, int size) {
     int block_size = 256;
-    int grid_size = (size + block_size - 1) / block_size;
-    if (grid_size > 1024) grid_size = 1024;
-
-    // Tamanho real do array parcial
-    int partial_size = grid_size * block_size;
-
-    double *d_partial_sums, *d_partial_maxs, *d_partial_mins, *d_partial_sum_sqs;
-    CHECK(cudaMalloc(&d_partial_sums, partial_size * sizeof(double)));
-    CHECK(cudaMalloc(&d_partial_maxs, partial_size * sizeof(double)));
-    CHECK(cudaMalloc(&d_partial_mins, partial_size * sizeof(double)));
-    CHECK(cudaMalloc(&d_partial_sum_sqs, partial_size * sizeof(double)));
-
-    partial_stats_kernel<<<grid_size, block_size>>>(d_u, d_partial_sums, d_partial_maxs, 
-                                                  d_partial_mins, d_partial_sum_sqs, size, partial_size);
-    CHECK(cudaDeviceSynchronize());
-
-    double* partial_sums = (double*)malloc(partial_size * sizeof(double));
-    double* partial_maxs = (double*)malloc(partial_size * sizeof(double));
-    double* partial_mins = (double*)malloc(partial_size * sizeof(double));
-    double* partial_sum_sqs = (double*)malloc(partial_size * sizeof(double));
+    int grid_size = (size + 4 * block_size - 1) / (4 * block_size);
     
-    CHECK(cudaMemcpy(partial_sums, d_partial_sums, partial_size * sizeof(double), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(partial_maxs, d_partial_maxs, partial_size * sizeof(double), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(partial_mins, d_partial_mins, partial_size * sizeof(double), cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(partial_sum_sqs, d_partial_sum_sqs, partial_size * sizeof(double), cudaMemcpyDeviceToHost));
-
+    double* d_stats;
+    CHECK(cudaMalloc(&d_stats, grid_size * 4 * sizeof(double)));
+    
+    size_t shared_mem_size = block_size * 4 * sizeof(double);
+    reduce_stats_kernel<<<grid_size, block_size, shared_mem_size>>>(d_u, d_stats, size);
+    CHECK(cudaGetLastError());
+    
+    double* block_stats = (double*)malloc(grid_size * 4 * sizeof(double));
+    CHECK(cudaMemcpy(block_stats, d_stats, grid_size * 4 * sizeof(double), cudaMemcpyDeviceToHost));
+    
+    // Redução final na CPU (pequena)
     double total_sum = 0.0;
     double global_max = -DBL_MAX;
     double global_min = DBL_MAX;
     double total_sum_sq = 0.0;
-
-    for (int i = 0; i < partial_size; i++) {
-        total_sum += partial_sums[i];
-        global_max = fmax(global_max, partial_maxs[i]);
-        global_min = fmin(global_min, partial_mins[i]);
-        total_sum_sq += partial_sum_sqs[i];
+    
+    for (int i = 0; i < grid_size; i++) {
+        int idx = i * 4;
+        total_sum += block_stats[idx];
+        global_max = fmax(global_max, block_stats[idx+1]);
+        global_min = fmin(global_min, block_stats[idx+2]);
+        total_sum_sq += block_stats[idx+3];
     }
-
+    
     h_stats[0] = total_sum;
     h_stats[1] = global_max;
     h_stats[2] = global_min;
     h_stats[3] = total_sum_sq;
-
-    free(partial_sums);
-    free(partial_maxs);
-    free(partial_mins);
-    free(partial_sum_sqs);
-    CHECK(cudaFree(d_partial_sums));
-    CHECK(cudaFree(d_partial_maxs));
-    CHECK(cudaFree(d_partial_mins));
-    CHECK(cudaFree(d_partial_sum_sqs));
+    
+    free(block_stats);
+    CHECK(cudaFree(d_stats));
 }
 
 void print_stats(double mass, double max_val, double min_val, double l2_squared, int step) {
@@ -175,13 +210,16 @@ int main() {
     double *z = (double*)malloc(Nz * sizeof(double));
     int i, j, k, n;
 
+    // Inicialização
     for (i = 0; i < Nx; i++) x[i] = i * dx;
     for (j = 0; j < Ny; j++) y[j] = j * dy;
     for (k = 0; k < Nz; k++) z[k] = k * dz;
 
+    // Inicialização com zeros
     memset(u, 0, total_size * sizeof(double));
     memset(u_new, 0, total_size * sizeof(double));
 
+    // Condição inicial gaussiana
     double cx = Lx/2, cy = Ly/2, cz = Lz/2;
     for (i = 0; i < Nx; i++) {
         for (j = 0; j < Ny; j++) {
@@ -192,13 +230,16 @@ int main() {
         }
     }
 
+    // Alocação na GPU
     double *d_u, *d_u_new;
     CHECK(cudaMalloc(&d_u, total_size * sizeof(double)));
     CHECK(cudaMalloc(&d_u_new, total_size * sizeof(double)));
     
+    // Copiar dados iniciais para GPU
     CHECK(cudaMemcpy(d_u, u, total_size * sizeof(double), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_u_new, u_new, total_size * sizeof(double), cudaMemcpyHostToDevice));
 
+    // Configuração de kernels
     dim3 block_borders(16, 16);
     int max_dim1 = (Nx > Ny) ? Nx : Ny;
     int max_dim2 = (Ny > Nz) ? Ny : Nz;
@@ -215,24 +256,32 @@ int main() {
         (Nz - 2 + block_evolve.z - 1) / block_evolve.z
     );
 
+    // Variáveis para estatísticas
     double stats[4];
+    
+    // Cálculo das estatísticas iniciais na GPU
     compute_stats_gpu(d_u, stats, total_size);
     print_stats(stats[0], stats[1], stats[2], stats[3], 0);
 
     struct timeval t0, t1;
     gettimeofday(&t0, NULL);
 
+    // Loop de evolução temporal
     for (n = 0; n < nt; n++) {
+        // Zerar bordas na GPU
         set_borders_zero<<<grid_borders, block_borders>>>(d_u_new, Nx, Ny, Nz);
         CHECK(cudaGetLastError());
 
+        // Calcular evolução
         evolve_kernel<<<grid_evolve, block_evolve>>>(d_u, d_u_new, nu_dt, dx2, dy2, dz2, Nx, Ny, Nz);
         CHECK(cudaGetLastError());
 
+        // Trocar ponteiros
         double* temp = d_u;
         d_u = d_u_new;
         d_u_new = temp;
 
+        // Calcular estatísticas periodicamente na GPU
         if ((n+1) % (nt/10) == 0 || n == nt-1) {
             compute_stats_gpu(d_u, stats, total_size);
             print_stats(stats[0], stats[1], stats[2], stats[3], n+1);
@@ -241,6 +290,7 @@ int main() {
 
     gettimeofday(&t1, NULL);
 
+    // Limpeza
     free(u);
     free(u_new);
     free(x);
