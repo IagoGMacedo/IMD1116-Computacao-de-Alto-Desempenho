@@ -1,0 +1,8 @@
+module load compilers/nvidia/nvhpc/24.11
+
+nvcc -o simulacao3d_cuda Main.cu -lm
+
+sbatch job.sh
+
+
+nsys stats profile_nsys.nsys-rep
