@@ -1,0 +1,4 @@
+    module load compilers/nvidia/nvhpc/24.11
+    nvc -mp=gpu -o a Main.c
+
+    GPU QUE EU USEI AQUI: gpu-4-a100 

@@ -1,0 +1,7 @@
+CPU:
+    gcc -fopenmp -o a paralelo.c
+
+
+GPU:
+    module load compilers/nvidia/nvhpc/24.11
+    nvc -mp=gpu -o a gpu.c
